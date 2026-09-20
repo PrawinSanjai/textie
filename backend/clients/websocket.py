@@ -20,13 +20,13 @@ class WebsocketManager:
         conversation_id = str(conversation_id)
         participant_id = str(participant_id)
 
-        room = self.connections.get(str(conversation_id))
+        room = self.connections.get(conversation_id)
         if room is None:
             return
         room.pop(participant_id, None)
         if len(room) == 0:
             self.connections.pop(conversation_id, None)
-    
+
     async def broadcast(self, conversation_id: UUID, payload: dict):
         room = self.connections.get(str(conversation_id), {})
         disconnected = []
@@ -48,6 +48,6 @@ class WebsocketManager:
                     f"{e}"
                 )
                 disconnected.append(participant_id)
-        
+
         for participant_id in disconnected:
             room.pop(participant_id, None)

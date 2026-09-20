@@ -7,8 +7,7 @@ class ConversationJoinRequest(BaseModel):
     code: str
 
 class ConversationLeaveRequest(BaseModel):
-    conversation_id: UUID
-    participant_id: UUID  
+    participant_id: UUID
 
 class ConversationCreateResponse(BaseModel):
     conversation_id: UUID
@@ -19,9 +18,15 @@ class ConversationCreateResponse(BaseModel):
 
 class ConversationJoinResponse(BaseModel):
     conversation_id: UUID
+    code: str
     participant_id: UUID
     participant_token: str
     expires_at: datetime
+
+class ConversationLeaveResponse(BaseModel):
+    conversation_id: UUID
+    participant_id: UUID
+    status: str
 
 # Message operation
 class ChatHistoryRequest(BaseModel):

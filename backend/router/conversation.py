@@ -4,7 +4,7 @@ from uuid import UUID
 from schema import (
     ConversationJoinRequest, ConversationLeaveRequest,
     ConversationJoinResponse, ConversationCreateResponse,
-    ChatHistoryResponse
+    ConversationLeaveResponse, ChatHistoryRequest, ChatHistoryResponse
 )
 from services.conversation import ConversationService
 
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/conversation", tags=["Conversation"])
 conversation_service = ConversationService()
 
 
-@router.post("/create",response_model=ConversationCreateResponse)
+@router.post("/create", response_model=ConversationCreateResponse)
 def create_conversation():
     return conversation_service.create_conversation()
 
@@ -20,12 +20,16 @@ def create_conversation():
 def join_conversation(request: ConversationJoinRequest):
     return conversation_service.join_conversation(request=request)
 
-@router.post("/{conversation_id}/leave")
-def leave_conversation(request: ConversationLeaveRequest):
-    return conversation_service.leave_conversation(request=request)
+@router.post("/{conversation_id}/leave", response_model=ConversationLeaveResponse)
+def leave_conversation(conversation_id: UUID, request: ConversationLeaveRequest):
+    return conversation_service.leave_conversation(
+        conversation_id=conversation_id,
+        request=request
+    )
 
 @router.post("/{conversation_id}/chat", response_model=ChatHistoryResponse)
-def get_chat_history(conversation_id:UUID, request: ChatHistoryResponse):
+def get_chat_history(conversation_id: UUID, request: ChatHistoryRequest):
     return conversation_service.get_chat_history(
-        conversation_id=conversation_id, request=request
+        conversation_id=conversation_id,
+        request=request
     )

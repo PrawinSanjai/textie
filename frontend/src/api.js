@@ -1,14 +1,20 @@
 const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/+$/, '')
+const REQUEST_TIMEOUT_MS = 12000
 
 async function request(path, options = {}) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   let res
   try {
     res = await fetch(`${API_URL}${path}`, {
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      signal: controller.signal,
       ...options,
     })
   } catch (_) {
     throw new Error('Could not reach the server. Check your connection.')
+  } finally {
+    clearTimeout(timeout)
   }
 
   if (!res.ok) {
@@ -39,8 +45,10 @@ export function joinConversation(code) {
 }
 
 export function leaveConversation(conversationId, participantId) {
-  const params = new URLSearchParams({ participant_id: participantId })
-  return request(`/conversation/${conversationId}/leave?${params}`, { method: 'POST' })
+  return request(`/conversation/${conversationId}/leave`, {
+    method: 'POST',
+    body: JSON.stringify({ participant_id: participantId }),
+  })
 }
 
 export function getMessages(conversationId, participantId, token) {

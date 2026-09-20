@@ -10,6 +10,6 @@ def _encrypt(text: str) -> bytes:
     encrypted_text = fernet.encrypt(text.encode("utf-8"))
     return encrypted_text
 
-def _decrypt(text: str) -> str:
+def _decrypt(text: bytes) -> str:
     decrypted_text = fernet.decrypt(text).decode("utf-8")
     return decrypted_text

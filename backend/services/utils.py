@@ -1,4 +1,4 @@
-import os, random, secrets, hashlib
+import os, secrets, hashlib
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,7 +11,7 @@ def get_env(var: str, default = None):
     return val
 
 def generate_code() -> str:
-    return str(random.randint(100000, 999999))
+    return str(secrets.randbelow(900000) + 100000)
 
 def generate_token() -> str:
     return secrets.token_urlsafe(32)

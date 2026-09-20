@@ -3,24 +3,27 @@ from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException
 
 from database import db_session
-from models import ( 
+from models import (
     Conversation, Participant, ConversationStatus, Message
 )
 from schema import (
     ConversationJoinRequest, ConversationLeaveRequest,
     ConversationCreateResponse, ConversationJoinResponse,
+    ConversationLeaveResponse,
     ChatHistoryRequest, ChatHistoryResponse, MessageResponse
 )
+from config import Configuration
 from .utils import (
     generate_code, generate_token, generate_token_hash
 )
 from services.crypto import _decrypt
 
+config = Configuration()
+
 class ConversationService:
 
     def _generate_unique_code(self, db) -> str:
         while True:
-
             code = generate_code()
             conversation = (
                 db.query(Conversation)
@@ -54,7 +57,6 @@ class ConversationService:
                 is_owner=True
             )
             db.add(participant)
-            db.commit()
 
             return ConversationCreateResponse(
                 conversation_id=conversation.id,
@@ -63,31 +65,31 @@ class ConversationService:
                 participant_id=participant.id,
                 expires_at=expires_at
             )
-    
+
     def join_conversation(self, request: ConversationJoinRequest):
         with db_session() as db:
-            conversation = (db.query(Conversation).filter(
-                    Conversation.code == request.code).first()
-                )
-            
+            conversation = (
+                db.query(Conversation).filter(
+                    Conversation.code == request.code
+                ).first()
+            )
+
             if conversation is None:
                 raise HTTPException(status_code=404, detail="Conversation not found.")
             if conversation.status == ConversationStatus.DELETED:
                 raise HTTPException(status_code=404, detail="Conversation not found.")
             if conversation.status == ConversationStatus.ENDED:
                 raise HTTPException(status_code=410, detail="Conversation has ended.")
-            if conversation.status == ConversationStatus.INACTIVE:
-                conversation.status = ConversationStatus.ACTIVE
-                conversation.inactive_at = None
             if (
                 conversation.expires_at is not None
                 and conversation.expires_at < datetime.now(timezone.utc)
             ):
-                print("Expiry:", conversation.expires_at)
-                print("Now   :", datetime.now(timezone.utc))
-                print("Expired:", conversation.expires_at < datetime.now(timezone.utc))
                 raise HTTPException(status_code=410, detail="Conversation has expired.")
-            
+
+            if conversation.status == ConversationStatus.INACTIVE:
+                conversation.status = ConversationStatus.ACTIVE
+                conversation.inactive_at = None
+
             token = generate_token()
             token_hash = generate_token_hash(token)
 
@@ -100,33 +102,17 @@ class ConversationService:
 
             if conversation.status == ConversationStatus.WAITING:
                 conversation.status = ConversationStatus.ACTIVE
-            db.commit()
 
             return ConversationJoinResponse(
                 conversation_id=conversation.id,
+                code=conversation.code,
                 participant_id=participant.id,
                 participant_token=token,
                 expires_at=conversation.expires_at,
             )
 
-    def leave_conversation(self, request: ConversationLeaveRequest):
-        participant_id = request.participant_id
-        conversation_id = request.conversation_id
-        
+    def leave_conversation(self, conversation_id: UUID, request: ConversationLeaveRequest):
         with db_session() as db:
-            participant = (
-                db.query(Participant).filter(
-                    Participant.id == participant_id,
-                    Participant.conversation_id == conversation_id,
-                    Participant.left_at.is_(None)
-                ).first()
-            )
-            if participant is None:
-                raise HTTPException(
-                    status_code=404, detail="Participant not found."
-                )
-
-            participant.left_at = datetime.now(timezone.utc)
             conversation = (
                 db.query(Conversation).filter(
                     Conversation.id == conversation_id
@@ -137,7 +123,21 @@ class ConversationService:
                     status_code=404,
                     detail="Conversation not found."
                 )
-            
+
+            participant = (
+                db.query(Participant).filter(
+                    Participant.id == request.participant_id,
+                    Participant.conversation_id == conversation_id,
+                    Participant.left_at.is_(None)
+                ).first()
+            )
+            if participant is None:
+                raise HTTPException(
+                    status_code=404, detail="Participant not found."
+                )
+
+            participant.left_at = datetime.now(timezone.utc)
+
             active_participants = (
                 db.query(Participant).filter(
                     Participant.conversation_id == conversation_id,
@@ -148,72 +148,22 @@ class ConversationService:
             if active_participants == 0:
                 conversation.status = ConversationStatus.INACTIVE
                 conversation.inactive_at = datetime.now(timezone.utc)
+            elif conversation.status == ConversationStatus.INACTIVE:
+                conversation.status = ConversationStatus.ACTIVE
+                conversation.inactive_at = None
 
-                db.commit()
-
-                return {
-                    "conversation_id": conversation.id,
-                    "participant_id": participant.id,
-                    "status": conversation.status
-                }
-
-    def get_chat_history(self, conversation_id: UUID, request: ChatHistoryRequest):
-        with db_session() as db:
-            conversation = (
-                db.query(Conversation).filter(
-                    Conversation.id == conversation_id
-                ).first()
+            return ConversationLeaveResponse(
+                conversation_id=conversation_id,
+                participant_id=participant.id,
+                status=str(conversation.status),
             )
-
-            if conversation is None:
-                raise HTTPException(
-                    status_code=404, detail= "Conversation not found."
-                )
-
-            if conversation.status == ConversationStatus.DELETED:
-                raise HTTPException(
-                    status_code=404, detail="Conversation not found."
-                )
-
-            token_hash = generate_token_hash(request.participant_token)
-
-            participant = (
-                db.query(Participant).filter(
-                    Participant.conversation_id == conversation_id,
-                    Participant.participant_token == token_hash
-                ).first()
-            )
-
-            if participant is None:
-                raise HTTPException(
-                    status_code=401, detail="Invalid participant token."
-                )
-
-            messages = (
-                db.query(Message).filter(
-                    Message.conversation_id == conversation_id
-                ).order_by(Message.sent_at.asc()).all()
-            )
-
-            result = []
-
-            for msg in messages:
-                decrypted_msg = _decrypt(msg.ciphertext)
-                result.append(
-                    MessageResponse(
-                        id=msg.id,
-                        participant_id=msg.participant_id,
-                        message=decrypted_msg,
-                        sent_at=msg.sent_at
-                    )
-                )
-
-            return ChatHistoryResponse(messages=result)
 
     def cleanup_inactive_conversations(self):
         now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(seconds=120)
+        grace_seconds = int(config.CONVERSATION_GRACE_PERIOD or 120)
+        cutoff = now - timedelta(seconds=grace_seconds)
 
+        deleted_count = 0
         with db_session() as db:
             conversations = (
                 db.query(Conversation).filter(
@@ -222,8 +172,6 @@ class ConversationService:
                     Conversation.inactive_at <= cutoff
                 )
             )
-
-            deleted_count = 0
 
             for conversation in conversations:
                 active_participants = (
@@ -237,9 +185,78 @@ class ConversationService:
                     conversation.inactive_at = None
                     continue
 
-                conversation.status = ConversationStatus.ENDED
                 db.delete(conversation)
                 deleted_count += 1
 
-            db.commit()
-            return deleted_count
+        expired_count = self.cleanup_expired_conversations()
+        deleted_count += expired_count
+        return deleted_count
+
+    def cleanup_expired_conversations(self):
+        now = datetime.now(timezone.utc)
+        deleted_count = 0
+        with db_session() as db:
+            expired = (
+                db.query(Conversation).filter(
+                    Conversation.expires_at.is_not(None),
+                    Conversation.expires_at < now,
+                    Conversation.status != ConversationStatus.DELETED,
+                )
+            )
+            for conversation in expired:
+                db.delete(conversation)
+                deleted_count += 1
+        return deleted_count
+
+    def _authenticate_participant(self, db, conversation_id: UUID, token: str):
+        token_hash = generate_token_hash(token=token)
+        participant = db.query(Participant).filter(
+            Participant.conversation_id == conversation_id,
+            Participant.participant_token == token_hash,
+            Participant.left_at.is_(None)
+        ).first()
+
+        if participant is None:
+            raise HTTPException(status_code=401, detail="Invalid participant token")
+
+    def get_chat_history(self, conversation_id: UUID, request: ChatHistoryRequest):
+        with db_session() as db:
+            conversation = db.query(Conversation).filter(
+                Conversation.id == conversation_id
+            ).first()
+
+            if conversation is None:
+                raise HTTPException(status_code=404, detail="Conversation not found.")
+
+            if conversation.status == ConversationStatus.DELETED:
+                raise HTTPException(status_code=404, detail="Conversation not found.")
+            if conversation.status == ConversationStatus.ENDED:
+                raise HTTPException(status_code=410, detail="Conversation has ended.")
+            if (
+                conversation.expires_at is not None
+                and conversation.expires_at < datetime.now(timezone.utc)
+            ):
+                raise HTTPException(status_code=410, detail="Conversation has expired.")
+
+            self._authenticate_participant(
+                db=db,
+                conversation_id=conversation_id,
+                token=request.participant_token
+            )
+
+            messages = db.query(Message).filter(
+                Message.conversation_id == conversation_id
+            ).order_by(Message.sent_at.asc()).all()
+
+            chat_messages = []
+
+            for msg in messages:
+                message = _decrypt(msg.ciphertext)
+                chat_messages.append(MessageResponse(
+                    id=msg.id,
+                    participant_id=msg.participant_id,
+                    message=message,
+                    sent_at=msg.sent_at
+                ))
+
+            return ChatHistoryResponse(messages=chat_messages)

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 from sqlalchemy import (
-    DateTime, Enum as SqlEnum, String, Integer, UUID, Column,
+    DateTime, Enum as SqlEnum, String, UUID, Column,
     ForeignKey, LargeBinary, Boolean
 )
 from sqlalchemy.orm import (

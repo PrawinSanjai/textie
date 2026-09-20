@@ -8,7 +8,7 @@ class Configuration:
     TEXTIE_API_KEY = get_env("TEXTIE_API_KEY", None)
     CRYPT_SECRET_KEY = get_env("CRYPT_SECRET_KEY", None)
     REDIS_URL = get_env("REDIS_URL", None)
-    CONVERSATION_GRACE_PERIOD = get_env("CONVERSATION_GRACE_PERIOD_SECONDS", 120)
+    CONVERSATION_GRACE_PERIOD = int(get_env("CONVERSATION_GRACE_PERIOD_SECONDS", 120))
 
     def validate(self):
         missing = []
