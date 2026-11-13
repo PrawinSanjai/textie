@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from uuid import UUID
 
 from schema import (
@@ -7,16 +7,21 @@ from schema import (
     ConversationLeaveResponse, ChatHistoryRequest, ChatHistoryResponse
 )
 from services.conversation import ConversationService
+from dependencies.rate_limit import limit_conversation_creation, limit_conversation_join
 
 router = APIRouter(prefix="/conversation", tags=["Conversation"])
 conversation_service = ConversationService()
 
 
-@router.post("/create", response_model=ConversationCreateResponse)
+@router.post(
+    "/create",
+    response_model=ConversationCreateResponse,
+    dependencies=[Depends(limit_conversation_creation)],
+)
 def create_conversation():
     return conversation_service.create_conversation()
 
-@router.post("/join", response_model=ConversationJoinResponse)
+@router.post("/join", response_model=ConversationJoinResponse, dependencies=[Depends(limit_conversation_join)])
 def join_conversation(request: ConversationJoinRequest):
     return conversation_service.join_conversation(request=request)
 

@@ -356,20 +356,6 @@ cffi = {version = ">=2.0.0", markers = "platform_python_implementation != \"PyPy
 ssh = ["bcrypt (>=3.1.5)"]
 
 [[package]]
-name = "dotenv"
-version = "0.9.9"
-description = "Deprecated package"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9"},
-]
-
-[package.dependencies]
-python-dotenv = "*"
-
-[[package]]
 name = "ecdsa"
 version = "0.19.2"
 description = "ECDSA cryptographic signature library (pure python)"
@@ -1266,4 +1252,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "0f9627cbb65b7831ecd6fd7a4669e9149cad75e4c8035acdfe616aed598e1af8"
+content-hash = "4b4bb9473d27d70ba78c888400b7558cd396f0783cf44e05fe2eb7bfca8c0ab3"

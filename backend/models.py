@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 from sqlalchemy import (
-    DateTime, Enum as SqlEnum, String, UUID, Column,
-    ForeignKey, LargeBinary, Boolean
+    BigInteger, DateTime, Enum as SqlEnum, String, UUID, Column,
+    ForeignKey, LargeBinary, Boolean, UniqueConstraint
 )
 from sqlalchemy.orm import (
     relationship
@@ -27,6 +27,7 @@ class Conversation(Base):
     owner_token_hash = Column(String(64), nullable=False)
     status = Column(SqlEnum(ConversationStatus), default=ConversationStatus.WAITING, nullable=False)
     inactive_at = Column(DateTime(timezone=True), nullable=True)
+    last_message_sequence = Column(BigInteger, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -52,6 +53,10 @@ class Participant(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence", name="uq_messages_conversation_sequence"),
+        UniqueConstraint("participant_id", "client_message_id", name="uq_messages_participant_client_id"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     conversation_id = Column(
@@ -65,6 +70,8 @@ class Message(Base):
         nullable=False,
     )
     ciphertext = Column(LargeBinary, nullable=False)
+    sequence = Column(BigInteger, nullable=False)
+    client_message_id = Column(UUID(as_uuid=True), nullable=True)
     # nonce = Column(LargeBinary, nullable=False)
     sent_at = Column(
         DateTime(timezone=True),

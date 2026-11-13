@@ -63,7 +63,6 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    print(config.get_main_option("sqlalchemy.url"))
     config.set_main_option(
         "sqlalchemy.url",
         project_config.DATABASE_URL,

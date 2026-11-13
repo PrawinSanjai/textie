@@ -1,4 +1,7 @@
 from contextlib import contextmanager
+import logging
+import os
+import time
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -19,18 +22,36 @@ NAMING_CONVENTION = {
 
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
 Base = declarative_base(metadata=metadata)
-engine = create_engine(url=config.DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=0)
+engine = create_engine(
+    url=config.DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=config.DB_POOL_SIZE,
+    max_overflow=config.DB_MAX_OVERFLOW,
+    pool_timeout=30,
+)
 session_local = sessionmaker(autocommit=False, expire_on_commit=False, autoflush=True, bind=engine)
+logger = logging.getLogger(__name__)
+_pool_metrics = {"checkouts": 0, "wait_seconds_total": 0.0, "wait_seconds_max": 0.0}
 
 @contextmanager
 def db_session():
     try:
         db = session_local()
+        started = time.perf_counter()
+        db.connection()
+        elapsed = time.perf_counter() - started
+        _pool_metrics["checkouts"] += 1
+        _pool_metrics["wait_seconds_total"] += elapsed
+        _pool_metrics["wait_seconds_max"] = max(_pool_metrics["wait_seconds_max"], elapsed)
         yield db
         db.commit()
     except Exception as e:
         db.rollback()
-        print(f"Exception occured while connecting with DB: {e}")
+        logger.error("Database session failed")
         raise e
     finally:
         db.close()
+
+
+def database_pool_metrics():
+    return {**_pool_metrics, "checked_out": engine.pool.checkedout(), "pool_size": engine.pool.size(), "overflow": engine.pool.overflow(), "process_id": os.getpid()}

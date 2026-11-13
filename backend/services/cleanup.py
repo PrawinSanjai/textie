@@ -1,36 +1,48 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
+from starlette.concurrency import run_in_threadpool
 
+from clients.redis import redis_client
+from clients.websocket import websocket_manager
 from services.conversation import ConversationService
 
+logger = logging.getLogger(__name__)
 conversation_service = ConversationService()
 
 
 async def chat_cleanup():
     while True:
         try:
-            deleted = conversation_service.cleanup_inactive_conversations()
+            deleted = await run_in_threadpool(
+                conversation_service.cleanup_inactive_conversations
+            )
             if deleted:
-                print(f"Deleted {deleted} expired connections.")
+                logger.info("Deleted %s expired conversations", deleted)
 
-        except Exception as e:
-            print(f"Chat cleanup failed {type(e).__name__}: {str(e)}")
+        except Exception:
+            logger.error("Conversation cleanup failed")
 
         await asyncio.sleep(30)
 
 @asynccontextmanager
 async def chat_cleanup_lifespan(app: any):
+    await redis_client.connect()
+    pubsub = await redis_client.subscribe_to_conversation_events()
+    pubsub_task = asyncio.create_task(
+        redis_client.listen_for_conversation_events(
+            pubsub,
+            websocket_manager.broadcast_local,
+        )
+    )
     cleanup_task = asyncio.create_task(chat_cleanup())
-    print("Running conversation cleanup...")
+    logger.info("Conversation cleanup and Redis event listener started")
     try:
         yield
     finally:
-        print("Stopping conversation cleanup...")
-    cleanup_task.cancel()
-
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
-
-    print("Stopped conversation cleanup...")
+        cleanup_task.cancel()
+        pubsub_task.cancel()
+        await asyncio.gather(cleanup_task, pubsub_task, return_exceptions=True)
+        await redis_client.close_pubsub(pubsub)
+        await redis_client.close()
+        logger.info("Conversation cleanup and Redis event listener stopped")

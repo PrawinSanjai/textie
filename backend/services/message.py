@@ -1,3 +1,4 @@
+import hmac
 from uuid import UUID
 from datetime import datetime, timezone
 from fastapi import HTTPException
@@ -57,7 +58,7 @@ class MessageService:
 
             token_hash = generate_token_hash(token=token)
 
-            if participant.participant_token != token_hash:
+            if not hmac.compare_digest(participant.participant_token, token_hash):
                 raise HTTPException(
                     status_code=403, detail="Invalid participant token."
                 )
@@ -72,7 +73,7 @@ class MessageService:
                 plain_text = _decrypt(text=message.ciphertext)
                 result.append(MessageResponse(
                     id=message.id, participant_id=message.participant_id,
-                    message=plain_text, sent_at=message.sent_at
+                    sequence=message.sequence, message=plain_text, sent_at=message.sent_at
                 ))
 
             return result

@@ -1,16 +1,12 @@
 from uuid import UUID
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 
-from schema import MessageResponse
-from services.message import MessageService
+from schema import ChatHistoryRequest, ChatHistoryResponse
+from services.conversation import ConversationService
 
 router = APIRouter(prefix="/message", tags=["Messages"])
-message_service = MessageService()
+conversation_service = ConversationService()
 
-@router.get("/{conversation_id}/messages", response_model=list[MessageResponse])
-def get_messages(conversation_id: UUID, participant_id: UUID, token: str):
-    return message_service.get_message(
-        conversation_id=conversation_id,
-        participant_id=participant_id,
-        token=token
-    )
+@router.post("/{conversation_id}/messages", response_model=ChatHistoryResponse)
+def get_messages(conversation_id: UUID, request: ChatHistoryRequest):
+    return conversation_service.get_chat_history(conversation_id, request)

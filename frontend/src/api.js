@@ -7,9 +7,12 @@ async function request(path, options = {}) {
   let res
   try {
     res = await fetch(`${API_URL}${path}`, {
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-      signal: controller.signal,
       ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+      signal: options.signal || controller.signal,
     })
   } catch (_) {
     throw new Error('Could not reach the server. Check your connection.')
@@ -44,22 +47,26 @@ export function joinConversation(code) {
   })
 }
 
-export function leaveConversation(conversationId, participantId) {
+export function leaveConversation(conversationId, participantId, participantToken) {
   return request(`/conversation/${conversationId}/leave`, {
     method: 'POST',
-    body: JSON.stringify({ participant_id: participantId }),
+    body: JSON.stringify({
+      participant_id: participantId,
+      participant_token: participantToken,
+    }),
   })
 }
 
-export function getMessages(conversationId, participantId, token) {
-  const params = new URLSearchParams({ participant_id: participantId, token })
-  return request(`/message/${conversationId}/messages?${params}`)
+export function getMessages(conversationId, token, afterSequence = 0) {
+  return request(`/conversation/${conversationId}/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ participant_token: token, after_sequence: afterSequence, limit: 200 }),
+  })
 }
 
-export function chatWebSocketUrl(conversationId, participantId, token) {
+export function chatWebSocketUrl(conversationId) {
   const base = API_URL.replace(/^http/, 'ws')
-  const params = new URLSearchParams({ participant_id: participantId, token })
-  return `${base}/ws/${conversationId}?${params}`
+  return `${base}/ws/${conversationId}`
 }
 
 export { API_URL }

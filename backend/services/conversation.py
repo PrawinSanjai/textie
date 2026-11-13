@@ -1,6 +1,8 @@
+import hmac
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 
 from database import db_session
 from models import (
@@ -39,39 +41,58 @@ class ConversationService:
     def create_conversation(self):
         token = generate_token()
         token_hash = generate_token_hash(token)
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=config.CONVERSATION_TTL_HOURS)
 
-        with db_session() as db:
-            code = self._generate_unique_code(db=db)
-            conversation = Conversation(
-                code=code,
-                owner_token_hash=token_hash,
-                expires_at=expires_at
-            )
-            db.add(conversation)
-            db.flush()
+        for _ in range(5):
+            try:
+                with db_session() as db:
+                    code = self._generate_unique_code(db=db)
+                    conversation = Conversation(
+                        code=code,
+                        owner_token_hash=token_hash,
+                        expires_at=expires_at
+                    )
+                    db.add(conversation)
+                    db.flush()
+                    db.refresh(conversation)
 
-            participant = Participant(
-                conversation_id=conversation.id,
-                participant_token=token_hash,
-                is_owner=True
-            )
-            db.add(participant)
+                    participant = Participant(
+                        conversation_id=conversation.id,
+                        participant_token=token_hash,
+                        is_owner=True
+                    )
+                    db.add(participant)
+                    db.flush()
+                    db.refresh(participant)
 
-            return ConversationCreateResponse(
-                conversation_id=conversation.id,
-                code=code,
-                participant_token=token,
-                participant_id=participant.id,
-                expires_at=expires_at
-            )
+                    response = ConversationCreateResponse(
+                        conversation_id=conversation.id,
+                        code=code,
+                        participant_token=token,
+                        participant_id=participant.id,
+                        expires_at=expires_at
+                    )
+                return response
+            except IntegrityError as exc:
+                constraint_name = getattr(
+                    getattr(exc.orig, "diag", None),
+                    "constraint_name",
+                    None,
+                )
+                if constraint_name != "ix_conversations_code":
+                    raise
+
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reserve a room code. Please try again.",
+        )
 
     def join_conversation(self, request: ConversationJoinRequest):
         with db_session() as db:
             conversation = (
                 db.query(Conversation).filter(
                     Conversation.code == request.code
-                ).first()
+                ).with_for_update().first()
             )
 
             if conversation is None:
@@ -86,6 +107,13 @@ class ConversationService:
             ):
                 raise HTTPException(status_code=410, detail="Conversation has expired.")
 
+            active_count = db.query(Participant).filter(
+                Participant.conversation_id == conversation.id,
+                Participant.left_at.is_(None),
+            ).count()
+            if active_count >= config.MAX_PARTICIPANTS_PER_CONVERSATION:
+                raise HTTPException(status_code=409, detail="This conversation is full.")
+
             if conversation.status == ConversationStatus.INACTIVE:
                 conversation.status = ConversationStatus.ACTIVE
                 conversation.inactive_at = None
@@ -99,9 +127,15 @@ class ConversationService:
                 is_owner=False,
             )
             db.add(participant)
+            db.flush()
+            db.refresh(participant)
 
             if conversation.status == ConversationStatus.WAITING:
                 conversation.status = ConversationStatus.ACTIVE
+
+            db.flush()
+            db.refresh(conversation)
+            db.refresh(participant)
 
             return ConversationJoinResponse(
                 conversation_id=conversation.id,
@@ -133,7 +167,13 @@ class ConversationService:
             )
             if participant is None:
                 raise HTTPException(
-                    status_code=404, detail="Participant not found."
+                    status_code=401, detail="Invalid participant credentials."
+                )
+
+            supplied_token_hash = generate_token_hash(request.participant_token)
+            if not hmac.compare_digest(participant.participant_token, supplied_token_hash):
+                raise HTTPException(
+                    status_code=401, detail="Invalid participant credentials."
                 )
 
             participant.left_at = datetime.now(timezone.utc)
@@ -245,8 +285,9 @@ class ConversationService:
             )
 
             messages = db.query(Message).filter(
-                Message.conversation_id == conversation_id
-            ).order_by(Message.sent_at.asc()).all()
+                Message.conversation_id == conversation_id,
+                Message.sequence > request.after_sequence,
+            ).order_by(Message.sequence.asc()).limit(request.limit).all()
 
             chat_messages = []
 
@@ -255,8 +296,10 @@ class ConversationService:
                 chat_messages.append(MessageResponse(
                     id=msg.id,
                     participant_id=msg.participant_id,
+                    sequence=msg.sequence,
                     message=message,
                     sent_at=msg.sent_at
                 ))
 
-            return ChatHistoryResponse(messages=chat_messages)
+            next_sequence = chat_messages[-1].sequence if chat_messages else request.after_sequence
+            return ChatHistoryResponse(messages=chat_messages, next_after_sequence=next_sequence)
