@@ -2,7 +2,9 @@ import asyncio
 from collections import defaultdict
 import logging
 from uuid import UUID
+
 from fastapi import WebSocket
+
 from config import Configuration
 
 logger = logging.getLogger(__name__)
@@ -10,15 +12,19 @@ config = Configuration()
 
 
 class WebsocketManager:
-
     def __init__(self):
         self.connections = defaultdict(dict)
 
-    async def connect(self, conversation_id: UUID, participant_id: UUID, websocket: WebSocket):
+    async def connect(
+        self,
+        conversation_id: UUID,
+        participant_id: UUID,
+        websocket: WebSocket,
+    ):
         room = str(conversation_id)
         participant = str(participant_id)
-        queue = asyncio.Queue(maxsize=config.WS_SEND_QUEUE_SIZE)
-        task = asyncio.create_task(self._sender(websocket, queue))
+        message_queue = asyncio.Queue(maxsize=config.WS_SEND_QUEUE_SIZE)
+        sender_task = asyncio.create_task(self._sender(websocket, message_queue))
         previous = self.connections[room].get(participant)
         if previous:
             previous[2].cancel()
@@ -26,13 +32,20 @@ class WebsocketManager:
                 await previous[0].close(code=4409, reason="Connection replaced")
             except Exception:
                 pass
-        self.connections[room][participant] = (websocket, queue, task)
+        self.connections[room][participant] = (
+            websocket,
+            message_queue,
+            sender_task,
+        )
 
     async def _sender(self, websocket, queue):
         try:
             while True:
                 payload = await queue.get()
-                await asyncio.wait_for(websocket.send_json(payload), timeout=config.WS_SEND_TIMEOUT_SECONDS)
+                await asyncio.wait_for(
+                    websocket.send_json(payload),
+                    timeout=config.WS_SEND_TIMEOUT_SECONDS,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -53,7 +66,12 @@ class WebsocketManager:
                         return False
         return False
 
-    async def disconnect(self, conversation_id: UUID, participant_id: UUID, websocket=None):
+    async def disconnect(
+        self,
+        conversation_id: UUID,
+        participant_id: UUID,
+        websocket=None,
+    ):
         conversation_id = str(conversation_id)
         participant_id = str(participant_id)
 
@@ -68,14 +86,14 @@ class WebsocketManager:
         if len(room) == 0:
             self.connections.pop(conversation_id, None)
 
-    async def broadcast_local(self, conversation_id, payload: dict):
+    async def broadcast_local(self, conversation_id, payload):
         room = self.connections.get(str(conversation_id), {})
         disconnected = []
 
-        for participant_id, websocket in list(room.items()):
-            websocket, queue, _ = room[participant_id]
+        for participant_id, connection in list(room.items()):
+            websocket, message_queue, _ = connection
             try:
-                queue.put_nowait(payload)
+                message_queue.put_nowait(payload)
             except asyncio.QueueFull:
                 logger.warning("WebSocket outbound queue full")
                 try:

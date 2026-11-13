@@ -1,6 +1,8 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 
 from clients.redis import redis_client
@@ -26,7 +28,7 @@ async def chat_cleanup():
         await asyncio.sleep(30)
 
 @asynccontextmanager
-async def chat_cleanup_lifespan(app: any):
+async def chat_cleanup_lifespan(_app: FastAPI):
     await redis_client.connect()
     pubsub = await redis_client.subscribe_to_conversation_events()
     pubsub_task = asyncio.create_task(

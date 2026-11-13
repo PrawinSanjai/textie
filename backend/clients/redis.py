@@ -2,8 +2,10 @@ import asyncio
 import base64
 import json
 import logging
+import time
 
 import redis.asyncio as redis
+from redis.exceptions import WatchError
 
 from config import Configuration
 from services.crypto import _decrypt
@@ -12,29 +14,11 @@ config = Configuration()
 config.validate()
 logger = logging.getLogger(__name__)
 
-RATE_LIMIT_SCRIPT = """
-local redis_time = redis.call('TIME')
-local now = redis_time[1] * 1000 + math.floor(redis_time[2] / 1000)
-local window = tonumber(ARGV[1])
-local limit = tonumber(ARGV[2])
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
-local count = redis.call('ZCARD', KEYS[1])
-if count >= limit then
-    local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
-    return {0, math.max(1, tonumber(oldest[2]) + window - now)}
-end
-local sequence = redis.call('INCR', KEYS[2])
-redis.call('ZADD', KEYS[1], now, tostring(now) .. ':' .. tostring(sequence))
-redis.call('PEXPIRE', KEYS[1], window)
-redis.call('PEXPIRE', KEYS[2], window)
-return {1, 0}
-"""
-
 
 class RedisClient:
     def __init__(self):
         self.local_failures = 0
-        self.client = redis.from_url(
+        self._client = redis.from_url(
             config.REDIS_URL,
             decode_responses=True,
             max_connections=config.REDIS_MAX_CONNECTIONS,
@@ -45,87 +29,105 @@ class RedisClient:
         self.local_failures += 1
 
     async def connect(self):
-        await self.client.ping()
+        await self._client.ping()
 
-    async def consume_creation_token(
-        self,
-        key: str,
-        limit: int,
-        window_seconds: int,
-    ) -> tuple[bool, int]:
-        allowed, retry_after_ms = await self.client.eval(
-            RATE_LIMIT_SCRIPT,
-            2,
-            key,
-            f"{key}:sequence",
-            window_seconds * 1000,
-            limit,
-        )
-        return bool(allowed), int(retry_after_ms)
+    async def allow_request(self, key, limit, window_seconds):
+        count = await self._client.incr(key)
+        if count == 1:
+            await self._client.expire(key, window_seconds)
+        ttl = await self._client.ttl(key)
+        return count <= limit, max(0, ttl) * 1000
 
-    async def consume_rate_limit(self, key: str, limit: int, window_seconds: int):
-        return await self.consume_creation_token(key, limit, window_seconds)
+    async def ping(self):
+        return await self._client.ping()
+
+    def _presence_keys(self, conversation_id, participant_id):
+        participant_key = f"textie:presence:conversation:{conversation_id}:participant:{participant_id}"
+        room_key = f"textie:presence:conversation:{conversation_id}:participants"
+        active_key = "textie:presence:active_connections"
+        return participant_key, room_key, active_key
 
     async def register_presence(self, conversation_id, participant_id, connection_id, ttl):
-        key = f"textie:presence:conversation:{conversation_id}:participant:{participant_id}"
-        room = f"textie:presence:conversation:{conversation_id}:participants"
-        active = "textie:presence:active_connections"
-        script = """
-        local prior = redis.call('GET', KEYS[1])
-        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-        redis.call('SADD', KEYS[2], ARGV[3])
-        redis.call('ZADD', KEYS[3], ARGV[4], ARGV[1])
-        redis.call('EXPIRE', KEYS[3], ARGV[2] * 2)
-        if prior then return 0 else return 1 end
-        """
-        return bool(await self.client.eval(script, 3, key, room, active, connection_id, ttl, participant_id, __import__('time').time() + ttl))
+        participant_key, room_key, active_key = self._presence_keys(conversation_id, participant_id)
+        while True:
+            try:
+                # WATCH prevents a stale socket from replacing a newer lease.
+                async with self._client.pipeline(transaction=True) as pipe:
+                    await pipe.watch(participant_key)
+                    was_online = await pipe.get(participant_key) is not None
+                    pipe.multi()
+                    pipe.set(participant_key, connection_id, ex=ttl)
+                    pipe.sadd(room_key, participant_id)
+                    pipe.zadd(active_key, {connection_id: time.time() + ttl})
+                    pipe.expire(active_key, ttl * 2)
+                    await pipe.execute()
+                return not was_online
+            except WatchError:
+                continue
 
     async def refresh_presence(self, conversation_id, participant_id, connection_id, ttl):
-        key = f"textie:presence:conversation:{conversation_id}:participant:{participant_id}"
-        active = "textie:presence:active_connections"
-        script = """
-        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-        redis.call('EXPIRE', KEYS[1], ARGV[2])
-        redis.call('ZADD', KEYS[2], ARGV[3], ARGV[1])
-        redis.call('EXPIRE', KEYS[2], ARGV[2] * 2)
-        return 1
-        """
-        return bool(await self.client.eval(script, 2, key, active, connection_id, ttl, __import__('time').time() + ttl))
+        participant_key, _, active_key = self._presence_keys(conversation_id, participant_id)
+        while True:
+            try:
+                async with self._client.pipeline(transaction=True) as pipe:
+                    await pipe.watch(participant_key)
+                    if await pipe.get(participant_key) != connection_id:
+                        return False
+                    pipe.multi()
+                    pipe.expire(participant_key, ttl)
+                    pipe.zadd(active_key, {connection_id: time.time() + ttl})
+                    pipe.expire(active_key, ttl * 2)
+                    await pipe.execute()
+                return True
+            except WatchError:
+                continue
 
     async def remove_presence(self, conversation_id, participant_id, connection_id):
-        key = f"textie:presence:conversation:{conversation_id}:participant:{participant_id}"
-        room = f"textie:presence:conversation:{conversation_id}:participants"
-        active = "textie:presence:active_connections"
-        script = """
-        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-        redis.call('DEL', KEYS[1]); redis.call('SREM', KEYS[2], ARGV[2]); redis.call('ZREM', KEYS[3], ARGV[1])
-        return 1
-        """
-        return bool(await self.client.eval(script, 3, key, room, active, connection_id, participant_id))
+        participant_key, room_key, active_key = self._presence_keys(conversation_id, participant_id)
+        while True:
+            try:
+                async with self._client.pipeline(transaction=True) as pipe:
+                    await pipe.watch(participant_key)
+                    if await pipe.get(participant_key) != connection_id:
+                        return False
+                    pipe.multi()
+                    pipe.delete(participant_key)
+                    pipe.srem(room_key, participant_id)
+                    pipe.zrem(active_key, connection_id)
+                    await pipe.execute()
+                return True
+            except WatchError:
+                continue
 
     async def list_presence(self, conversation_id):
-        room = f"textie:presence:conversation:{conversation_id}:participants"
-        script = "local out={}; for _,p in ipairs(redis.call('SMEMBERS',KEYS[1])) do if redis.call('EXISTS',ARGV[1]..p)==1 then table.insert(out,p) else redis.call('SREM',KEYS[1],p) end end; return out"
-        return await self.client.eval(script, 1, room, f"textie:presence:conversation:{conversation_id}:participant:")
+        room_key = f"textie:presence:conversation:{conversation_id}:participants"
+        members = await self._client.smembers(room_key)
+        online = []
+        for participant_id in members:
+            participant_key = f"textie:presence:conversation:{conversation_id}:participant:{participant_id}"
+            if await self._client.exists(participant_key):
+                online.append(participant_id)
+            else:
+                await self._client.srem(room_key, participant_id)
+        return online
 
     async def active_connection_count(self):
         key = "textie:presence:active_connections"
-        now = __import__('time').time()
-        await self.client.zremrangebyscore(key, "-inf", now)
-        return await self.client.zcard(key)
+        await self._client.zremrangebyscore(key, "-inf", time.time())
+        return await self._client.zcard(key)
 
-    async def increment_metric(self, name: str, amount: int = 1):
-        await self.client.hincrby("textie:metrics", name, amount)
+    async def increment_metric(self, name, amount=1):
+        await self._client.hincrby("textie:metrics", name, amount)
 
     async def metrics_snapshot(self):
-        return await self.client.hgetall("textie:metrics")
+        return await self._client.hgetall("textie:metrics")
 
-    async def publish_conversation_event(self, conversation_id, payload: dict):
+    async def publish_conversation_event(self, conversation_id, payload):
         channel = f"textie:conversation:{conversation_id}"
-        await self.client.publish(channel, json.dumps(payload))
+        await self._client.publish(channel, json.dumps(payload))
 
     async def subscribe_to_conversation_events(self):
-        pubsub = self.client.pubsub()
+        pubsub = self._client.pubsub()
         await pubsub.psubscribe("textie:conversation:*")
         return pubsub
 
@@ -136,10 +138,8 @@ class RedisClient:
                 async for event in pubsub.listen():
                     if event.get("type") != "pmessage":
                         continue
-
-                    channel = event.get("channel", "")
                     try:
-                        conversation_id = channel.rsplit(":", 1)[1]
+                        conversation_id = event["channel"].rsplit(":", 1)[1]
                         payload = json.loads(event["data"])
                         self.restore_event_payload(payload)
                         await callback(conversation_id, payload)
@@ -164,16 +164,16 @@ class RedisClient:
                     logger.error("Redis Pub/Sub resubscribe failed")
 
     @staticmethod
-    def restore_event_payload(payload: dict):
+    def restore_event_payload(payload):
         if payload.get("type") == "message":
-            encrypted = base64.b64decode(payload.pop("ciphertext"), validate=True)
-            payload["message"] = _decrypt(encrypted)
+            ciphertext = base64.b64decode(payload.pop("ciphertext"), validate=True)
+            payload["message"] = _decrypt(ciphertext)
 
     async def close_pubsub(self, pubsub):
         await pubsub.aclose()
 
     async def close(self):
-        await self.client.aclose()
+        await self._client.aclose()
 
 
 redis_client = RedisClient()

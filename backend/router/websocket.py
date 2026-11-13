@@ -6,6 +6,7 @@ from services.websocket import WebsocketService
 router = APIRouter(prefix="/ws", tags=["Websocket Connection"])
 websocket_service = WebsocketService()
 
+
 @router.websocket("/{conversation_id}")
 async def websocket_endpoint(websocket: WebSocket, conversation_id: UUID):
     await websocket_service.handle_ws_connection(

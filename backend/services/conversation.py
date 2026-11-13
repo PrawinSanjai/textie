@@ -1,29 +1,30 @@
 import hmac
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
-from datetime import datetime, timezone, timedelta
+
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
-from database import db_session
-from models import (
-    Conversation, Participant, ConversationStatus, Message
-)
-from schema import (
-    ConversationJoinRequest, ConversationLeaveRequest,
-    ConversationCreateResponse, ConversationJoinResponse,
-    ConversationLeaveResponse,
-    ChatHistoryRequest, ChatHistoryResponse, MessageResponse
-)
 from config import Configuration
-from .utils import (
-    generate_code, generate_token, generate_token_hash
+from database import db_session
+from models import Conversation, ConversationStatus, Message, Participant
+from schema import (
+    ChatHistoryRequest,
+    ChatHistoryResponse,
+    ConversationCreateResponse,
+    ConversationJoinRequest,
+    ConversationJoinResponse,
+    ConversationLeaveRequest,
+    ConversationLeaveResponse,
+    MessageResponse,
 )
 from services.crypto import _decrypt
+from services.utils import generate_code, generate_token, generate_token_hash
 
 config = Configuration()
 
-class ConversationService:
 
+class ConversationService:
     def _generate_unique_code(self, db) -> str:
         while True:
             code = generate_code()
@@ -41,7 +42,9 @@ class ConversationService:
     def create_conversation(self):
         token = generate_token()
         token_hash = generate_token_hash(token)
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=config.CONVERSATION_TTL_HOURS)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            hours=config.CONVERSATION_TTL_HOURS
+        )
 
         for _ in range(5):
             try:
@@ -54,7 +57,6 @@ class ConversationService:
                     )
                     db.add(conversation)
                     db.flush()
-                    db.refresh(conversation)
 
                     participant = Participant(
                         conversation_id=conversation.id,
@@ -63,7 +65,6 @@ class ConversationService:
                     )
                     db.add(participant)
                     db.flush()
-                    db.refresh(participant)
 
                     response = ConversationCreateResponse(
                         conversation_id=conversation.id,
@@ -89,11 +90,9 @@ class ConversationService:
 
     def join_conversation(self, request: ConversationJoinRequest):
         with db_session() as db:
-            conversation = (
-                db.query(Conversation).filter(
-                    Conversation.code == request.code
-                ).with_for_update().first()
-            )
+            conversation = db.query(Conversation).filter(
+                Conversation.code == request.code
+            ).with_for_update().first()
 
             if conversation is None:
                 raise HTTPException(status_code=404, detail="Conversation not found.")
@@ -101,10 +100,7 @@ class ConversationService:
                 raise HTTPException(status_code=404, detail="Conversation not found.")
             if conversation.status == ConversationStatus.ENDED:
                 raise HTTPException(status_code=410, detail="Conversation has ended.")
-            if (
-                conversation.expires_at is not None
-                and conversation.expires_at < datetime.now(timezone.utc)
-            ):
+            if conversation.expires_at and conversation.expires_at < datetime.now(timezone.utc):
                 raise HTTPException(status_code=410, detail="Conversation has expired.")
 
             active_count = db.query(Participant).filter(
@@ -134,8 +130,6 @@ class ConversationService:
                 conversation.status = ConversationStatus.ACTIVE
 
             db.flush()
-            db.refresh(conversation)
-            db.refresh(participant)
 
             return ConversationJoinResponse(
                 conversation_id=conversation.id,

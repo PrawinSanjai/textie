@@ -2,7 +2,6 @@ from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel, Field
 
-# Conversation operation
 class ConversationJoinRequest(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
 
@@ -29,7 +28,6 @@ class ConversationLeaveResponse(BaseModel):
     participant_id: UUID
     status: str
 
-# Message operation
 class ChatHistoryRequest(BaseModel):
     participant_token: str = Field(min_length=1, max_length=255)
     after_sequence: int = Field(default=0, ge=0)

@@ -2,12 +2,18 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 from sqlalchemy import (
-    BigInteger, DateTime, Enum as SqlEnum, String, UUID, Column,
-    ForeignKey, LargeBinary, Boolean, UniqueConstraint
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Enum as SqlEnum,
+    ForeignKey,
+    LargeBinary,
+    String,
+    UUID,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import (
-    relationship
-)
+from sqlalchemy.orm import relationship
 
 from database import Base
 
@@ -18,6 +24,7 @@ class ConversationStatus(str, Enum):
     INACTIVE = "INACTIVE"
     ENDED = "ENDED"
     DELETED = "DELETED"
+
 
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -31,14 +38,22 @@ class Conversation(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    participants = relationship("Participant", back_populates="conversation", cascade="all, delete-orphan")
-    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
+    participants = relationship(
+        "Participant",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+    messages = relationship(
+        "Message",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
 
 
 class Participant(Base):
     __tablename__ = "participants"
 
-    id  = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     conversation_id = Column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -79,5 +94,5 @@ class Message(Base):
         default=lambda: datetime.now(timezone.utc),
     )
 
-    conversation = relationship("Conversation",back_populates="messages",)
+    conversation = relationship("Conversation", back_populates="messages")
     participant = relationship("Participant")
